@@ -34,13 +34,15 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
-	"log"
+	goLogger "log"
 	"math/rand"
 	"net/http"
 	"os"
 	"strings"
 	"sync"
 	"time"
+
+	log "github.com/sirupsen/logrus"
 
 	"github.com/spf13/cobra"
 )
@@ -51,26 +53,21 @@ const (
 )
 
 var (
+	logFilePath    string
 	outputFilePath string
 	batchSize      int
 	totalRequests  int
-	WarningLogger  *log.Logger
-	InfoLogger     *log.Logger
-	ErrorLogger    *log.Logger
 )
 
 func init() {
 	queryCmd := newQueryCommand()
 
-	queryCmd.Flags().StringVarP(&outputFilePath, "output-file", "o", "query-results.json", "query data output file path")
+	queryCmd.Flags().StringVar(&logFilePath, "log-file", "", "log file path (defaults to \"\" (stdout))")
+	queryCmd.Flags().StringVar(&outputFilePath, "output-file", "query-results.json", "query data output file path")
 	queryCmd.Flags().IntVarP(&batchSize, "batch-size", "b", 100, "number of requests to send in each batch")
 	queryCmd.Flags().IntVarP(&totalRequests, "total-requests", "t", 10000, "number of requests to send in each batch")
 
 	rootCmd.AddCommand(queryCmd)
-
-	InfoLogger = log.New(os.Stdout, "INFO: ", log.Ldate|log.Ltime|log.Lshortfile)
-	WarningLogger = log.New(os.Stdout, "WARNING: ", log.Ldate|log.Ltime|log.Lshortfile)
-	ErrorLogger = log.New(os.Stdout, "ERROR: ", log.Ldate|log.Ltime|log.Lshortfile)
 }
 
 type queryData struct {
@@ -89,6 +86,8 @@ func newQueryCommand() *cobra.Command {
 The endpoint used will be randomly selected, to simulate a real world scenario.`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			setupLogging()
+
 			// Trim trailing slashes from the endpoints and add the query path`
 			endpoints := make([]string, 0)
 			for _, ep := range args {
@@ -105,6 +104,12 @@ The endpoint used will be randomly selected, to simulate a real world scenario.`
 			}
 
 			// Make a batch of requests to a randomly selected endpoint
+			log.WithFields(
+				log.Fields{
+					"endpoints":      endpoints,
+					"total_requests": totalRequests,
+				},
+			).Info("starting to loadtest endpoints")
 			for i := 0; i < numBatches; i++ {
 				// Randomly select an endpoint
 				rand.Seed(time.Now().Unix())
@@ -125,10 +130,10 @@ The endpoint used will be randomly selected, to simulate a real world scenario.`
 
 				// Convert to JSON and write to file
 				json, _ := json.MarshalIndent(batch, "", " ")
-				file, err := os.OpenFile(outputFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-				defer file.Close()
+				outputFile, err := os.OpenFile(outputFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+				defer outputFile.Close()
 
-				_, err = file.WriteString(string(json))
+				_, err = outputFile.WriteString(string(json))
 				if err != nil {
 					return err
 				}
@@ -139,10 +144,30 @@ The endpoint used will be randomly selected, to simulate a real world scenario.`
 	}
 }
 
+// setupLogging sets up the logging for the application to use either stdout or the logfile provided
+func setupLogging() {
+	logFile := os.Stdout
+	var err error
+	if logFilePath != "" {
+		logFile, err = os.OpenFile(logFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			goLogger.Fatalf("unable to open log file: %s", err.Error())
+		}
+	}
+
+	log.SetFormatter(&log.JSONFormatter{})
+	log.SetOutput(logFile)
+}
+
 // batchRequest makes a batch of requests to the endpoint provided returning data on the request
 // and logging any errors that may have occurred
 func batchRequest(fn func(string) (*queryData, error), batchSize int, endpoint string) []*queryData {
-	InfoLogger.Printf("making %d requests to %s", batchSize, endpoint)
+	log.WithFields(
+		log.Fields{
+			"batch_size": batchSize,
+			"endpoint":   endpoint,
+		},
+	).Infof("making batch of requests")
 	batchResutls := make([]*queryData, 0)
 	wg := sync.WaitGroup{}
 	for i := 0; i < batchSize; i++ {
@@ -151,7 +176,11 @@ func batchRequest(fn func(string) (*queryData, error), batchSize int, endpoint s
 			defer wg.Done()
 			qd, err := fn(endpoint)
 			if err != nil {
-				ErrorLogger.Printf("error making request: %s", err.Error())
+				log.WithFields(
+					log.Fields{
+						"error": err.Error(),
+					},
+				).Error("error making request")
 				return
 			}
 			batchResutls = append(batchResutls, qd)
