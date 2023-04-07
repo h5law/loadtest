@@ -62,7 +62,7 @@ var (
 func init() {
 	queryCmd := newQueryCommand()
 
-	queryCmd.Flags().StringVarP(&outputFilePath, "output", "o", "query-results.json", "query data output file path")
+	queryCmd.Flags().StringVarP(&outputFilePath, "output-file", "o", "query-results.json", "query data output file path")
 	queryCmd.Flags().IntVarP(&batchSize, "batch-size", "b", 100, "number of requests to send in each batch")
 	queryCmd.Flags().IntVarP(&totalRequests, "total-requests", "t", 10000, "number of requests to send in each batch")
 
