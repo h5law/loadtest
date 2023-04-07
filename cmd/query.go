@@ -33,6 +33,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	goLogger "log"
 	"math/rand"
@@ -57,6 +58,7 @@ var (
 	outputFilePath string
 	batchSize      int
 	totalRequests  int
+	concurrent     bool
 )
 
 func init() {
@@ -66,6 +68,10 @@ func init() {
 	queryCmd.Flags().StringVar(&outputFilePath, "output-file", "query-results.json", "query data output file path")
 	queryCmd.Flags().IntVarP(&batchSize, "batch-size", "b", 100, "number of requests to send in each batch")
 	queryCmd.Flags().IntVarP(&totalRequests, "total-requests", "t", 10000, "number of requests to send in each batch")
+	queryCmd.Flags().BoolVar(&concurrent, "concurrent", false, "send requests to all endpoints concurrently")
+
+	ctx := rootCmd.Context()
+	queryCmd.SetContext(ctx)
 
 	rootCmd.AddCommand(queryCmd)
 }
@@ -73,6 +79,7 @@ func init() {
 type queryData struct {
 	Response   string        `json:"response"`
 	StatusCode int           `json:"status_code"`
+	Error      string        `json:"error"`
 	Endpoint   string        `json:"endpoint"`
 	Elapsed    time.Duration `json:"elapsed"`
 }
@@ -95,47 +102,36 @@ The endpoint used will be randomly selected, to simulate a real world scenario.`
 				endpoints = append(endpoints, endpoint+queryPath)
 			}
 
-			// Determine the number of batches to send and the size of the final batch
-			numBatches := totalRequests / batchSize
-			finalBatchSize := batchSize
-			if numBatches*batchSize < totalRequests {
-				finalBatchSize = totalRequests - (numBatches * batchSize)
-				numBatches += 1
-			}
-
 			// Make a batch of requests to a randomly selected endpoint
-			log.WithFields(
-				log.Fields{
-					"endpoints":      endpoints,
-					"total_requests": totalRequests,
-				},
-			).Info("starting to loadtest endpoints")
-			for i := 0; i < numBatches; i++ {
-				// Randomly select an endpoint
-				rand.Seed(time.Now().Unix())
-				idx := rand.Intn(len(endpoints))
+			// Run the loadtest
+			if concurrent {
+				// Get batch info for each endpoint
+				numBatches, batchSize, finalBatchSize := getConcurrentBatchInfo(endpoints)
 
-				size := batchSize
-				if i == numBatches-1 {
-					size = finalBatchSize
-				}
+				// Run the loadtest concurrently
+				concurrentRequests(endpoints, numBatches, batchSize, finalBatchSize)
+			} else {
+				// Get batch info
+				numBatches, batchSize, finalBatchSize := getBatchInfo()
 
-				// Send a batch of requests to the randomly selected endpoint
-				batch := batchRequest(makeEmptyPostRequest, size, endpoints[idx])
+				log.WithFields(
+					log.Fields{
+						"endpoints":      endpoints,
+						"total_requests": totalRequests,
+						"batch_size":     batchSize,
+						"num_batches":    numBatches,
+						"concurrent":     concurrent,
+					},
+				).Info("starting to loadtest endpoints sequentially")
 
-				// If no output file path was provided, skip writing to file
-				if outputFilePath == "" {
-					continue
-				}
-
-				// Convert to JSON and write to file
-				json, _ := json.MarshalIndent(batch, "", " ")
-				outputFile, err := os.OpenFile(outputFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-				defer outputFile.Close()
-
-				_, err = outputFile.WriteString(string(json))
+				// Run the loadtest sequentially
+				err := sequentialRequests(endpoints, numBatches, batchSize, finalBatchSize)
 				if err != nil {
-					return err
+					log.WithFields(
+						log.Fields{
+							"error": err.Error(),
+						},
+					).Error("error running sequential requests")
 				}
 			}
 
@@ -155,72 +151,165 @@ func setupLogging() {
 		}
 	}
 
-	log.SetFormatter(&log.JSONFormatter{})
+	log.SetFormatter(&log.TextFormatter{
+		FullTimestamp: true,
+	})
 	log.SetOutput(logFile)
 }
 
-// batchRequest makes a batch of requests to the endpoint provided returning data on the request
-// and logging any errors that may have occurred
-func batchRequest(fn func(string) (*queryData, error), batchSize int, endpoint string) []*queryData {
+// getBatchInfo determines the number of batches to send and the size of the final batch
+func getBatchInfo() (int, int, int) {
+	numBatches := totalRequests / batchSize
+	finalBatchSize := batchSize
+	if numBatches*batchSize < totalRequests {
+		finalBatchSize = totalRequests - (numBatches * batchSize)
+		numBatches += 1
+	}
+
+	return numBatches, batchSize, finalBatchSize
+}
+
+// getConcurrentBatchInfo determines the number of batches and their size to send to all endpoints concurrently
+// TODO: Add better batch size calculation
+func getConcurrentBatchInfo(endpoints []string) (int, int, int) {
+	numEndpoints := len(endpoints)
+	totalPerEndpoint := totalRequests / numEndpoints
+	numBatches := totalPerEndpoint / batchSize
+	finalBatchSize := batchSize
+	if numBatches*batchSize < totalPerEndpoint {
+		finalBatchSize = totalPerEndpoint - (numBatches * batchSize)
+		numBatches += 1
+	}
+	return numBatches, batchSize, finalBatchSize
+}
+
+// concurrentRequests makes batches of requests to all endpoints concurrently
+func concurrentRequests(endpoints []string, numBatches, batchSize, finalBatchSize int) {
+	// Create a wait group to wait for all requests to finish
+	wg := sync.WaitGroup{}
+	for i := 0; i < len(endpoints); i++ {
+		wg.Add(1)
+		// Log the loadtest info for each endpoint
+		log.WithFields(
+			log.Fields{
+				"endpoint":       endpoints[i],
+				"total_requests": ((numBatches - 1) * batchSize) + finalBatchSize,
+				"batch_size":     batchSize,
+				"num_batches":    numBatches,
+				"concurrent":     concurrent,
+			},
+		).Info("starting to loadtest endpoints concurrently")
+
+		go func(i int) {
+			defer wg.Done()
+			// Make requests to the endpoint sequentially in a goroutine
+			err := sequentialRequests(endpoints[i:i+1], numBatches, batchSize, finalBatchSize)
+			if err != nil {
+				log.WithFields(
+					log.Fields{
+						"error": err.Error(),
+					},
+				).Error("error running sequential requests")
+			}
+			return
+		}(i)
+	}
+	wg.Wait()
+
+	return
+}
+
+// sequentialRequests makes batches of requests to a randomly selected endpoint sequentially
+func sequentialRequests(endpoints []string, numBatches, batchSize, finalBatchSize int) error {
+	for i := 0; i < numBatches; i++ {
+		// Randomly select an endpoint
+		rand.Seed(time.Now().Unix())
+		idx := rand.Intn(len(endpoints))
+
+		size := batchSize
+		if i == numBatches-1 {
+			size = finalBatchSize
+		}
+
+		// Send a batch of requests to the randomly selected endpoint
+		batch := batchRequest(makeEmptyPostRequest, size, endpoints[idx])
+
+		// If no output file path was provided, skip writing to file
+		if outputFilePath == "" {
+			continue
+		}
+
+		// Convert to JSON and write to file
+		json, _ := json.Marshal(batch)
+		outputFile, err := os.OpenFile(outputFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		defer outputFile.Close()
+
+		_, err = outputFile.WriteString(fmt.Sprintf("%s\n", string(json)))
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// batchRequest makes a batch of requests to the endpoint provided returning data on the requests
+func batchRequest(fn func(string) *queryData, batchSize int, endpoint string) []*queryData {
+	// Log batch info
 	log.WithFields(
 		log.Fields{
 			"batch_size": batchSize,
 			"endpoint":   endpoint,
 		},
 	).Infof("making batch of requests")
-	batchResutls := make([]*queryData, 0)
+
+	// Create a wait group to wait for all requests to finish
 	wg := sync.WaitGroup{}
+	batchResutls := make([]*queryData, 0)
 	for i := 0; i < batchSize; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			qd, err := fn(endpoint)
-			if err != nil {
-				log.WithFields(
-					log.Fields{
-						"error": err.Error(),
-					},
-				).Error("error making request")
-				return
-			}
+			// Make request
+			qd := fn(endpoint)
 			batchResutls = append(batchResutls, qd)
+			return
 		}()
 	}
 	wg.Wait()
+
 	return batchResutls
 }
 
 // makeRequest makes a request to the endpoint provided returning data on the request
 // and any errors that may have occurred
-func makeEmptyPostRequest(endpoint string) (*queryData, error) {
-	r, err := http.NewRequest("POST", endpoint, bytes.NewBuffer([]byte{}))
-	if err != nil {
-		return nil, err
-	}
-
-	r.Header.Add("Content-Type", "application/json")
-
-	client := &http.Client{}
+func makeEmptyPostRequest(endpoint string) *queryData {
 	start := time.Now()
-	res, err := client.Do(r)
+	client := &http.Client{}
+	res, err := client.Post(endpoint, "application/json", bytes.NewBuffer([]byte{}))
 	if err != nil {
-		return nil, err
+		return &queryData{
+			StatusCode: res.StatusCode,
+			Error:      err.Error(),
+			Endpoint:   endpoint,
+		}
 	}
-	elapsed := time.Since(start)
-
 	defer res.Body.Close()
+	elapsed := time.Since(start)
 
 	b, err := io.ReadAll(res.Body)
 	if err != nil {
-		return nil, err
+		return &queryData{
+			StatusCode: res.StatusCode,
+			Error:      err.Error(),
+			Endpoint:   endpoint,
+		}
 	}
 
-	request := &queryData{
+	return &queryData{
 		Response:   strings.TrimSpace(string(b)),
 		StatusCode: res.StatusCode,
 		Endpoint:   endpoint,
 		Elapsed:    elapsed,
 	}
-
-	return request, nil
 }

@@ -31,8 +31,6 @@ POSSIBILITY OF SUCH DAMAGE.
 package cmd
 
 import (
-	"context"
-
 	"github.com/spf13/cobra"
 )
 
@@ -46,6 +44,6 @@ var rootCmd = &cobra.Command{
 relay requests to query the Pocket network for the latest block height.`,
 }
 
-func ExecuteContext(ctx context.Context) error {
-	return rootCmd.ExecuteContext(ctx)
+func Execute() error {
+	return rootCmd.Execute()
 }

@@ -31,32 +31,22 @@ POSSIBILITY OF SUCH DAMAGE.
 package main
 
 import (
-	"context"
-	"log"
 	"os"
 	"os/signal"
 	"syscall"
+
+	log "github.com/sirupsen/logrus"
 
 	"github.com/h5law/loadtest/cmd"
 )
 
 func main() {
-	ctx := newCLIContext()
-	err := cmd.ExecuteContext(ctx)
-	if ctx.Err() == context.Canceled || err == context.Canceled {
-		log.Fatal("aborted")
-	}
+	log.SetFormatter(&log.TextFormatter{
+		FullTimestamp: true,
+	})
 
-	if err != nil {
-		log.Fatalf("failed to execute command: %s", err.Error())
-	}
-}
-
-func newCLIContext() context.Context {
-	var (
-		cancelCtx, cancel = context.WithCancel(context.Background())
-		quit              = make(chan os.Signal, 1)
-	)
+	// Allow to interrupt the program with Ctrl+C
+	quit := make(chan os.Signal, 1)
 	signal.Notify(quit,
 		syscall.SIGTERM,
 		syscall.SIGINT,
@@ -65,7 +55,15 @@ func newCLIContext() context.Context {
 		os.Interrupt)
 	go func() {
 		<-quit
-		cancel()
+		log.Fatal("aborted")
 	}()
-	return cancelCtx
+
+	// Execute the command
+	if err := cmd.Execute(); err != nil {
+		log.WithFields(
+			log.Fields{
+				"error": err.Error(),
+			},
+		).Fatalf("failed to execute command")
+	}
 }
