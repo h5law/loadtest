@@ -83,7 +83,7 @@ type queryData struct {
 // NewQueryCommand returns a new query cobra command
 func newQueryCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:   "query",
+		Use:   "query <endpoint> <endpoint> ... <endpoint>",
 		Short: "Loadtest the nodes provided by sending Pocket Network relays",
 		Long: `Send relay requests for the latest block height, to the nodes provided.
 The endpoint used will be randomly selected, to simulate a real world scenario.`,
