@@ -31,17 +31,44 @@ POSSIBILITY OF SUCH DAMAGE.
 package cmd
 
 import (
+	goLogger "log"
+	"os"
+
+	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
 
-var cfgFile string
+var (
+	logFilePath string
 
-// rootCmd represents the base command when called without any subcommands
-var rootCmd = &cobra.Command{
-	Use:   "loadtest",
-	Short: "A simple Pocket loadtesting tool",
-	Long: `A CLI tool used to loadtest the Pocket Network nodes provided by sending
+	rootCmd = &cobra.Command{
+		Use:   "loadtest",
+		Short: "A simple Pocket loadtesting tool",
+		Long: `A CLI tool used to loadtest the Pocket Network nodes provided by sending
 relay requests to query the Pocket network for the latest block height.`,
+	}
+)
+
+func init() {
+	rootCmd.Flags().StringVar(&logFilePath, "log-file", "", "log file path (defaults to \"\" (stdout))")
+	setupLogging()
+}
+
+// setupLogging sets up the logging for the application to use either stdout or the logfile provided
+func setupLogging() {
+	logFile := os.Stdout
+	var err error
+	if logFilePath != "" {
+		logFile, err = os.OpenFile(logFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			goLogger.Fatalf("unable to open log file: %s", err.Error())
+		}
+	}
+
+	log.SetFormatter(&log.TextFormatter{
+		FullTimestamp: true,
+	})
+	log.SetOutput(logFile)
 }
 
 func Execute() error {

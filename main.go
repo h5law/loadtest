@@ -41,10 +41,6 @@ import (
 )
 
 func main() {
-	log.SetFormatter(&log.TextFormatter{
-		FullTimestamp: true,
-	})
-
 	// Allow to interrupt the program with Ctrl+C
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit,

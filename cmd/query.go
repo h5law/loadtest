@@ -35,7 +35,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	goLogger "log"
 	"math/rand"
 	"net/http"
 	"os"
@@ -48,13 +47,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// TODO: make this configurable
+// TODO: make this configurable?
 const (
 	queryPath = "/v1/query/height"
 )
 
 var (
-	logFilePath    string
 	outputFilePath string
 	batchSize      int
 	totalRequests  int
@@ -64,7 +62,6 @@ var (
 func init() {
 	queryCmd := newQueryCommand()
 
-	queryCmd.Flags().StringVar(&logFilePath, "log-file", "", "log file path (defaults to \"\" (stdout))")
 	queryCmd.Flags().StringVar(&outputFilePath, "output-file", "query-results.json", "query data output file path")
 	queryCmd.Flags().IntVarP(&batchSize, "batch-size", "b", 100, "number of requests to send in each batch")
 	queryCmd.Flags().IntVarP(&totalRequests, "total-requests", "t", 10000, "number of requests to send in each batch")
@@ -93,8 +90,6 @@ func newQueryCommand() *cobra.Command {
 The endpoint used will be randomly selected, to simulate a real world scenario.`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			setupLogging()
-
 			// Trim trailing slashes from the endpoints and add the query path`
 			endpoints := make([]string, 0)
 			for _, ep := range args {
@@ -138,23 +133,6 @@ The endpoint used will be randomly selected, to simulate a real world scenario.`
 			return nil
 		},
 	}
-}
-
-// setupLogging sets up the logging for the application to use either stdout or the logfile provided
-func setupLogging() {
-	logFile := os.Stdout
-	var err error
-	if logFilePath != "" {
-		logFile, err = os.OpenFile(logFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if err != nil {
-			goLogger.Fatalf("unable to open log file: %s", err.Error())
-		}
-	}
-
-	log.SetFormatter(&log.TextFormatter{
-		FullTimestamp: true,
-	})
-	log.SetOutput(logFile)
 }
 
 // getBatchInfo determines the number of batches to send and the size of the final batch
@@ -289,9 +267,8 @@ func makeEmptyPostRequest(endpoint string) *queryData {
 	res, err := client.Post(endpoint, "application/json", bytes.NewBuffer([]byte{}))
 	if err != nil {
 		return &queryData{
-			StatusCode: res.StatusCode,
-			Error:      err.Error(),
-			Endpoint:   endpoint,
+			Error:    err.Error(),
+			Endpoint: endpoint,
 		}
 	}
 	defer res.Body.Close()
@@ -300,9 +277,8 @@ func makeEmptyPostRequest(endpoint string) *queryData {
 	b, err := io.ReadAll(res.Body)
 	if err != nil {
 		return &queryData{
-			StatusCode: res.StatusCode,
-			Error:      err.Error(),
-			Endpoint:   endpoint,
+			Error:    err.Error(),
+			Endpoint: endpoint,
 		}
 	}
 
