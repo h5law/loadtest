@@ -31,7 +31,7 @@ POSSIBILITY OF SUCH DAMAGE.
 package main
 
 import (
-	"os"
+	"context"
 	"os/signal"
 	"syscall"
 
@@ -42,20 +42,14 @@ import (
 
 func main() {
 	// Allow to interrupt the program with Ctrl+C
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit,
+	ctx, stop := signal.NotifyContext(context.Background(),
 		syscall.SIGTERM,
 		syscall.SIGINT,
-		syscall.SIGQUIT,
-		os.Kill,
-		os.Interrupt)
-	go func() {
-		<-quit
-		log.Fatal("aborted")
-	}()
+		syscall.SIGQUIT)
+	defer stop()
 
 	// Execute the command
-	if err := cmd.Execute(); err != nil {
+	if err := cmd.ExecuteWithContext(ctx); err != nil {
 		log.WithFields(
 			log.Fields{
 				"error": err.Error(),

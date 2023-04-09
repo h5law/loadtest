@@ -32,6 +32,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -67,8 +68,7 @@ func init() {
 	queryCmd.Flags().IntVarP(&totalRequests, "total-requests", "t", 10000, "number of requests to send in each batch")
 	queryCmd.Flags().BoolVar(&concurrent, "concurrent", false, "send requests to all endpoints concurrently")
 
-	ctx := rootCmd.Context()
-	queryCmd.SetContext(ctx)
+	queryCmd.SetContext(rootCmd.Context())
 
 	rootCmd.AddCommand(queryCmd)
 }
@@ -90,6 +90,9 @@ func newQueryCommand() *cobra.Command {
 The endpoint used will be randomly selected, to simulate a real world scenario.`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Get cancellable context
+			ctx := cmd.Context()
+
 			// Trim trailing slashes from the endpoints and add the query path`
 			endpoints := make([]string, 0)
 			for _, ep := range args {
@@ -104,7 +107,13 @@ The endpoint used will be randomly selected, to simulate a real world scenario.`
 				numBatches, batchSize, finalBatchSize := getConcurrentBatchInfo(endpoints)
 
 				// Run the loadtest concurrently
-				concurrentRequests(endpoints, numBatches, batchSize, finalBatchSize)
+				if err := concurrentRequests(ctx, endpoints, numBatches, batchSize, finalBatchSize); err != nil {
+					log.WithFields(
+						log.Fields{
+							"error": err.Error(),
+						},
+					).Error("error running concurrent requests")
+				}
 			} else {
 				// Get batch info
 				numBatches, batchSize, finalBatchSize := getBatchInfo()
@@ -120,7 +129,7 @@ The endpoint used will be randomly selected, to simulate a real world scenario.`
 				).Info("starting to loadtest endpoints sequentially")
 
 				// Run the loadtest sequentially
-				err := sequentialRequests(endpoints, numBatches, batchSize, finalBatchSize)
+				err := sequentialRequests(ctx, endpoints, numBatches, batchSize, finalBatchSize)
 				if err != nil {
 					log.WithFields(
 						log.Fields{
@@ -162,69 +171,80 @@ func getConcurrentBatchInfo(endpoints []string) (int, int, int) {
 }
 
 // concurrentRequests makes batches of requests to all endpoints concurrently
-func concurrentRequests(endpoints []string, numBatches, batchSize, finalBatchSize int) {
+func concurrentRequests(ctx context.Context, endpoints []string, numBatches, batchSize, finalBatchSize int) error {
 	// Create a wait group to wait for all requests to finish
 	wg := sync.WaitGroup{}
 	for i := 0; i < len(endpoints); i++ {
-		wg.Add(1)
-		// Log the loadtest info for each endpoint
-		log.WithFields(
-			log.Fields{
-				"endpoint":       endpoints[i],
-				"total_requests": ((numBatches - 1) * batchSize) + finalBatchSize,
-				"batch_size":     batchSize,
-				"num_batches":    numBatches,
-				"concurrent":     concurrent,
-			},
-		).Info("starting to loadtest endpoints concurrently")
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("aborted")
+		default:
+			wg.Add(1)
+			// Log the loadtest info for each endpoint
+			log.WithFields(
+				log.Fields{
+					"endpoint":       endpoints[i],
+					"total_requests": ((numBatches - 1) * batchSize) + finalBatchSize,
+					"batch_size":     batchSize,
+					"num_batches":    numBatches,
+					"concurrent":     concurrent,
+				},
+			).Info("starting to loadtest endpoints concurrently")
 
-		go func(i int) {
-			defer wg.Done()
-			// Make requests to the endpoint sequentially in a goroutine
-			err := sequentialRequests(endpoints[i:i+1], numBatches, batchSize, finalBatchSize)
-			if err != nil {
-				log.WithFields(
-					log.Fields{
-						"error": err.Error(),
-					},
-				).Error("error running sequential requests")
-			}
-			return
-		}(i)
+			go func(i int) {
+				defer wg.Done()
+				// Make requests to the endpoint sequentially in a goroutine
+				err := sequentialRequests(ctx, endpoints[i:i+1], numBatches, batchSize, finalBatchSize)
+				if err != nil {
+					log.WithFields(
+						log.Fields{
+							"error": err.Error(),
+						},
+					).Error("error running sequential requests")
+				}
+			}(i)
+		}
 	}
 	wg.Wait()
 
-	return
+	return nil
 }
 
 // sequentialRequests makes batches of requests to a randomly selected endpoint sequentially
-func sequentialRequests(endpoints []string, numBatches, batchSize, finalBatchSize int) error {
+func sequentialRequests(ctx context.Context, endpoints []string, numBatches, batchSize, finalBatchSize int) error {
 	for i := 0; i < numBatches; i++ {
-		// Randomly select an endpoint
-		rand.Seed(time.Now().Unix())
-		idx := rand.Intn(len(endpoints))
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("aborted")
+		default:
+			// Randomly select an endpoint
+			rand.Seed(time.Now().Unix())
+			idx := rand.Intn(len(endpoints))
 
-		size := batchSize
-		if i == numBatches-1 {
-			size = finalBatchSize
-		}
+			size := batchSize
+			if i == numBatches-1 {
+				size = finalBatchSize
+			}
 
-		// Send a batch of requests to the randomly selected endpoint
-		batch := batchRequest(makeEmptyPostRequest, size, endpoints[idx])
+			// Send a batch of requests to the randomly selected endpoint
+			batch := batchRequest(makeEmptyPostRequest, size, endpoints[idx])
 
-		// If no output file path was provided, skip writing to file
-		if outputFilePath == "" {
-			continue
-		}
+			// If no output file path was provided, skip writing to file
+			if outputFilePath == "" {
+				continue
+			}
 
-		// Convert to JSON and write to file
-		json, _ := json.Marshal(batch)
-		outputFile, err := os.OpenFile(outputFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		defer outputFile.Close()
+			// Convert to JSON and write to file
+			json, _ := json.Marshal(batch)
+			outputFile, err := os.OpenFile(outputFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+			if err != nil {
+				return err
+			}
+			defer outputFile.Close()
 
-		_, err = outputFile.WriteString(fmt.Sprintf("%s\n", string(json)))
-		if err != nil {
-			return err
+			if _, err = fmt.Fprintf(outputFile, "%s\n", string(json)); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -251,7 +271,6 @@ func batchRequest(fn func(string) *queryData, batchSize int, endpoint string) []
 			// Make request
 			qd := fn(endpoint)
 			batchResutls = append(batchResutls, qd)
-			return
 		}()
 	}
 	wg.Wait()

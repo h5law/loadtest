@@ -31,6 +31,7 @@ POSSIBILITY OF SUCH DAMAGE.
 package cmd
 
 import (
+	"context"
 	goLogger "log"
 	"os"
 
@@ -71,6 +72,6 @@ func setupLogging() {
 	log.SetOutput(logFile)
 }
 
-func Execute() error {
-	return rootCmd.Execute()
+func ExecuteWithContext(ctx context.Context) error {
+	return rootCmd.ExecuteContext(ctx)
 }
